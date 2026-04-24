@@ -38,15 +38,15 @@ const stompClients = new Map()
 // ── STOMP: parsing / serialización ───────────────────────────
 
 function parseStompFrames(raw) {
-  if (!raw || raw.replace(/[\r\n]/g, '').length === 0) return []
+  if (!raw || raw.replace(/[\r\n\0]/g, '').length === 0) return []
   return raw
     .split('\0')
-    .map(f => f.replace(/\r\n/g, '\n').trim())
-    .filter(f => f.length > 0)
+    .map(f => f.replace(/\r\n/g, '\n'))   // normalizar line endings, SIN trim()
+    .filter(f => f.replace(/[\r\n]/g, '').length > 0)  // descartar heartbeats
     .map(f => {
-      const sep = f.indexOf('\n\n')
+      const sep = f.indexOf('\n\n')        // separador headers/body — se destruye con trim()
       if (sep === -1) return null
-      const headerLines = f.substring(0, sep).split('\n')
+      const headerLines = f.substring(0, sep).split('\n').filter(l => l.length > 0)
       const command = headerLines[0].trim()
       if (!command) return null
       const headers = {}
