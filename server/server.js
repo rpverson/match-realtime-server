@@ -1,7 +1,7 @@
-import express      from 'express'
-import { createServer } from 'http'
-import cors           from 'cors'
-import sockjs         from 'sockjs'
+import express            from 'express'
+import { createServer }  from 'http'
+import { WebSocketServer } from 'ws'
+import cors              from 'cors'
 
 const app        = express()
 const httpServer = createServer(app)
@@ -14,11 +14,11 @@ app.use(express.json())
 const MATCH_NAME = process.env.MATCH_NAME || 'Real Madrid vs Barcelona'
 
 let match = {
-  id:         1,
-  matchName:  MATCH_NAME,
-  homeScore:  0,
-  awayScore:  0,
-  updatedAt:  new Date().toISOString(),
+  id:        1,
+  matchName: MATCH_NAME,
+  homeScore: 0,
+  awayScore: 0,
+  updatedAt: new Date().toISOString(),
 }
 
 let events = [
@@ -27,15 +27,15 @@ let events = [
   { id: 3, eventType: 'Saque de esquina', minute: 18, description: 'Córner para el equipo local',          createdAt: new Date().toISOString() },
 ]
 
-let nextEventId    = 4
-let msgIdCounter   = 1
+let nextEventId  = 4
+let msgIdCounter = 1
 
-// ── STOMP: subscripciones activas ────────────────────────────
-// Map: conn → Map(subscriptionId → destination)
+// ── STOMP: subscripciones activas ─────────────────────────────
+// Map: ws → Map(subscriptionId → destination)
 
 const stompClients = new Map()
 
-// ── STOMP: parsing / serialización ──────────────────────────
+// ── STOMP: parsing / serialización ───────────────────────────
 
 function parseStompFrames(raw) {
   if (!raw || raw.replace(/[\r\n]/g, '').length === 0) return []
@@ -69,13 +69,14 @@ function makeStompFrame(command, headers, body) {
   return frame + '\0'
 }
 
-// Emite un MESSAGE a todos los clientes suscritos a `destination`
+// Envía un MESSAGE STOMP a todos los clientes suscritos a `destination`
 function broadcast(destination, payload) {
   const body = JSON.stringify(payload)
-  for (const [conn, subs] of stompClients) {
+  for (const [ws, subs] of stompClients) {
+    if (ws.readyState !== ws.OPEN) continue
     for (const [subId, dest] of subs) {
       if (dest === destination) {
-        conn.write(makeStompFrame('MESSAGE', {
+        ws.send(makeStompFrame('MESSAGE', {
           subscription:     subId,
           'message-id':     msgIdCounter++,
           destination,
@@ -87,48 +88,50 @@ function broadcast(destination, payload) {
   }
 }
 
-// ── SockJS: endpoint /ws/match (compatible con stompjs frontend) ──
+// ── WebSocket STOMP en /ws/match ──────────────────────────────
+// Stomp.client(url) del frontend usa WebSocket plano (no SockJS).
 
-const sockjsServer = sockjs.createServer({
-  sockjs_url: 'https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js',
-  log: () => {},   // suprimir logs de sockjs
-})
+const wss = new WebSocketServer({ server: httpServer, path: '/ws/match' })
 
-sockjsServer.on('connection', (conn) => {
-  stompClients.set(conn, new Map())
-  console.log(`[+] STOMP conectado   total=${stompClients.size}`)
+wss.on('connection', (ws) => {
+  stompClients.set(ws, new Map())
+  console.log(`[+] WS conectado    total=${stompClients.size}`)
 
-  conn.on('data', (raw) => {
+  ws.on('message', (data) => {
+    const raw = data.toString()
     for (const frame of parseStompFrames(raw)) {
       if (frame.command === 'CONNECT') {
-        conn.write(makeStompFrame('CONNECTED', {
-          version:       '1.1',
-          'heart-beat':  '0,0',
-          server:        'match-server/1.0',
+        ws.send(makeStompFrame('CONNECTED', {
+          version:      '1.1',
+          'heart-beat': '0,0',
+          server:       'match-server/1.0',
         }, null))
 
       } else if (frame.command === 'SUBSCRIBE') {
-        stompClients.get(conn)?.set(frame.headers.id, frame.headers.destination)
+        stompClients.get(ws)?.set(frame.headers.id, frame.headers.destination)
 
       } else if (frame.command === 'UNSUBSCRIBE') {
-        stompClients.get(conn)?.delete(frame.headers.id)
+        stompClients.get(ws)?.delete(frame.headers.id)
 
       } else if (frame.command === 'DISCONNECT') {
         if (frame.headers.receipt) {
-          conn.write(makeStompFrame('RECEIPT', { 'receipt-id': frame.headers.receipt }, null))
+          ws.send(makeStompFrame('RECEIPT', { 'receipt-id': frame.headers.receipt }, null))
         }
-        conn.close()
+        ws.close()
       }
     }
   })
 
-  conn.on('close', () => {
-    stompClients.delete(conn)
-    console.log(`[-] STOMP desconectado total=${stompClients.size}`)
+  ws.on('close', () => {
+    stompClients.delete(ws)
+    console.log(`[-] WS desconectado total=${stompClients.size}`)
+  })
+
+  ws.on('error', (err) => {
+    console.error('[!] WS error:', err.message)
+    stompClients.delete(ws)
   })
 })
-
-sockjsServer.installHandlers(httpServer, { prefix: '/ws/match' })
 
 // ── REST: Partido ─────────────────────────────────────────────
 
@@ -212,8 +215,8 @@ app.get('/health', (_req, res) => {
 const PORT = process.env.PORT || 8080
 
 httpServer.listen(PORT, () => {
-  console.log(`Servidor STOMP/SockJS corriendo en http://localhost:${PORT}`)
-  console.log(`  WS   /ws/match                  → STOMP sobre SockJS (stompjs frontend)`)
+  console.log(`Servidor STOMP/WebSocket corriendo en http://localhost:${PORT}`)
+  console.log(`  WS   /ws/match                 → STOMP sobre WebSocket plano`)
   console.log(`  GET  /api/match`)
   console.log(`  PUT  /api/match/:id`)
   console.log(`  POST /api/match/:id/reset`)
