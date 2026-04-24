@@ -2,7 +2,7 @@
   "name": "match-realtime-server",
   "version": "1.0.0",
   "type": "module",
-  "description": "Servidor público de partido en vivo — Express + Socket.io",
+  "description": "Servidor público de partido en vivo — Express + STOMP/SockJS",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -11,7 +11,7 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "socket.io": "^4.7.5"
+    "sockjs": "^0.3.24"
   },
   "engines": {
     "node": ">=20"
